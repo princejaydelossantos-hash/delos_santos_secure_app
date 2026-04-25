@@ -1,0 +1,13 @@
+rules:
+  - id: python-no-eval
+    pattern: eval(...)
+    message: "Avoid eval() due to code injection risks"
+    severity: ERROR
+    languages: [python]
+
+  - id: python-hardcoded-secret
+    patterns:
+      - pattern: PASSWORD = "..."
+    message: "Hardcoded secrets detected"
+    severity: ERROR
+    languages: [python]
