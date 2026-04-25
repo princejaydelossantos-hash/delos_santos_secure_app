@@ -1,0 +1,94 @@
+name: DevSecOps Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+
+  scan:
+    name: Security Scans
+    runs-on: ubuntu-latest
+
+    outputs:
+      scan_passed: ${{ steps.set-result.outputs.scan_passed }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep (SAST)
+        run: |
+          pip install semgrep
+          semgrep --config .semgrep.yml --json --output semgrep-report.json
+
+      - name: Dependency Scan (pip-audit)
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt -f json -o dependency-report.json
+
+      - name: Secret Scan (Gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          args: detect --report-format json --report-path gitleaks-report.json
+
+      - name: Set Scan Result
+        id: set-result
+        run: |
+          echo "scan_passed=true" >> $GITHUB_OUTPUT
+
+      - name: Upload Scan Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            semgrep-report.json
+            dependency-report.json
+            gitleaks-report.json
+
+  build:
+    name: Build, Scan Container, Generate SBOM
+    runs-on: ubuntu-latest
+    needs: scan
+    if: needs.scan.outputs.scan_passed == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker Image
+        run: |
+          IMAGE_TAG=secure-app:${{ github.sha }}
+          docker build -t $IMAGE_TAG .
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+
+      - name: Container Scan (Trivy)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ env.IMAGE_TAG }}
+          format: json
+          output: trivy-report.json
+          exit-code: '1'
+          severity: CRITICAL,HIGH
+
+      - name: Generate SBOM (Syft)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.IMAGE_TAG }}
+          format: cyclonedx-json
+          output-file: sbom.json
+
+      - name: Mark Trusted Build
+        run: |
+          echo "trusted=true" > trusted-build.txt
+          echo "${{ env.IMAGE_TAG }}" > image-id.txt
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            sbom.json
+            trivy-report.json
+            trusted-build.txt
+            image-id.txt
